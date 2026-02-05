@@ -84,7 +84,6 @@ def detect_scam(
     _: str = Depends(verify_api_key)
 ):
     try:
-
         user_message = request.message
 
         # -------------------------------
@@ -109,7 +108,7 @@ Message:
         response = client.chat.completions.create(
             model="gpt-5-mini",
             temperature=0,
-            max_tokens=50,
+            max_completion_tokens=100,  # ✅ changed from max_tokens
             messages=[
                 {"role": "user", "content": prompt}
             ]
@@ -123,7 +122,7 @@ Message:
 
         try:
             parsed = json.loads(raw_output)
-        except:
+        except json.JSONDecodeError:
             parsed = {
                 "scam_detected": False,
                 "agent_reply": "",
