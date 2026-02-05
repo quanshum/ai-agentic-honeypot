@@ -86,7 +86,7 @@ def detect_scam(
         user_message = request.message.text
 
         # -------------------------------
-        # Call OpenAI with the previous detailed prompt
+        # Call OpenAI with strict JSON instruction
         # -------------------------------
         prompt = f"""
 You are a scam detection engine.
@@ -101,6 +101,8 @@ Analyze the following message and respond ONLY in JSON with these fields:
 
 Message:
 {user_message}
+
+IMPORTANT: Always return valid JSON with all fields filled. If nothing is detected, fill 'agent_reply' with 'No scam detected'.
 """
 
         response = client.chat.completions.create(
@@ -119,30 +121,28 @@ Message:
         except json.JSONDecodeError:
             parsed = {
                 "scam_detected": False,
-                "agent_reply": "",
+                "agent_reply": "No scam detected",
                 "confidence_score": 0.0
             }
 
-        scam_detected = parsed.get("scam_detected", False)
-        agent_reply = parsed.get("agent_reply", "")
-        confidence_score = parsed.get("confidence_score", 0.0)
+        agent_reply = parsed.get("agent_reply", "No scam detected")
 
         # -------------------------------
-        # Extract Intelligence
+        # Optional: Intelligence Extraction
         # -------------------------------
-        upi_ids = extract_upi_ids(user_message)
-        bank_accounts = extract_bank_accounts(user_message)
-        links = extract_links(user_message)
+        # upi_ids = extract_upi_ids(user_message)
+        # bank_accounts = extract_bank_accounts(user_message)
+        # links = extract_links(user_message)
 
         # -------------------------------
-        # Store In Database (optional)
+        # Optional: Store In DB
         # -------------------------------
         # interaction = ScamInteraction(
         #     session_id=request.sessionId,
         #     message=user_message,
-        #     scam_detected=scam_detected,
+        #     scam_detected=parsed.get("scam_detected", False),
         #     agent_reply=agent_reply,
-        #     confidence_score=confidence_score,
+        #     confidence_score=parsed.get("confidence_score", 0.0),
         #     upi_ids=",".join(upi_ids),
         #     bank_accounts=",".join(bank_accounts),
         #     phishing_links=",".join(links)
@@ -151,7 +151,7 @@ Message:
         # db.commit()
 
         # -------------------------------
-        # Return in the required format for the hackathon
+        # Return in hackathon-required format
         # -------------------------------
         return {
             "status": "success",
