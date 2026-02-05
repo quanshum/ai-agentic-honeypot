@@ -1,57 +1,39 @@
 import os
-from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import List
+import json
 import re
-from openai import OpenAI
+from fastapi import FastAPI, HTTPException, Depends, Header
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from openai import OpenAI
 
-# DB imports
-from database import SessionLocal, engine, Base
-from models import Conversation, Message, Intelligence
+from database import SessionLocal
+from models import ScamInteraction
 
-
-# -----------------------------
-# Load Environment Variables
-# -----------------------------
-load_dotenv()
-
-API_KEY = os.getenv("HONEYPOT_API_KEY")
-
-if not API_KEY:
-    raise ValueError("HONEYPOT_API_KEY not set")
-
-if not os.getenv("OPENAI_API_KEY"):
-    raise ValueError("OPENAI_API_KEY not set")
-
-client = OpenAI()
-
-# Create tables
-Base.metadata.create_all(bind=engine)
+# -------------------------------
+# FastAPI App
+# -------------------------------
 
 app = FastAPI()
 
+# -------------------------------
+# Environment Variables
+# -------------------------------
 
-# -----------------------------
-# Global Exception Handler
-# Prevents API crashes
-# -----------------------------
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "details": str(exc)
-        }
-    )
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+API_KEY = os.getenv("API_KEY")
 
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is missing")
 
-# -----------------------------
-# DB Session Dependency
-# -----------------------------
+if not API_KEY:
+    raise ValueError("API_KEY is missing")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# -------------------------------
+# Database Dependency
+# -------------------------------
+
 def get_db():
     db = SessionLocal()
     try:
@@ -59,235 +41,139 @@ def get_db():
     finally:
         db.close()
 
-
-# -----------------------------
+# -------------------------------
 # Request Schema
-# -----------------------------
-class MessageHistory(BaseModel):
-    role: str
-    content: str
+# -------------------------------
 
-
-class HoneypotRequest(BaseModel):
-    conversation_id: str
+class ScamRequest(BaseModel):
+    session_id: str
     message: str
-    history: List[MessageHistory] = []
-    turn_count: int = 0
 
+# -------------------------------
+# Authentication
+# -------------------------------
 
-# -----------------------------
-# Intelligence Extraction
-# -----------------------------
-def extract_intelligence(text):
-
-    upi = re.findall(r"[a-zA-Z0-9.\-_]+@[a-zA-Z]+", text)
-    accounts = re.findall(r"\b\d{9,18}\b", text)
-    links = re.findall(r"https?://\S+", text)
-
-    return {
-        "upi_ids": list(set(upi)),
-        "bank_accounts": list(set(accounts)),
-        "phishing_links": list(set(links))
-    }
-
-
-# -----------------------------
-# Honeypot Endpoint
-# -----------------------------
-@app.post("/honeypot")
-def honeypot_endpoint(
-    data: HoneypotRequest,
-    x_api_key: str = Header(..., alias="x-api-key"),
-    db: Session = Depends(get_db)
-):
-
-    # -----------------------------
-    # API Authentication
-    # -----------------------------
+def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    # -----------------------------
-    # Ensure Conversation Exists
-    # -----------------------------
-    conversation = db.query(Conversation).filter_by(
-        conversation_id=data.conversation_id
-    ).first()
+# -------------------------------
+# Intelligence Extraction Helpers
+# -------------------------------
 
-    if not conversation:
-        conversation = Conversation(conversation_id=data.conversation_id)
-        db.add(conversation)
-        db.commit()
+def extract_upi_ids(text):
+    pattern = r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}"
+    return list(set(re.findall(pattern, text)))
 
-    # -----------------------------
-    # Scam Detection
-    # -----------------------------
-    detection_prompt = f"""
-You are a scam detection classifier.
+def extract_bank_accounts(text):
+    pattern = r"\b\d{9,18}\b"
+    return list(set(re.findall(pattern, text)))
 
-Rules:
-- If message involves urgency, payment request, account suspension,
-UPI, links, impersonation → YES
-- Otherwise → NO
+def extract_links(text):
+    pattern = r"https?://[^\s]+"
+    return list(set(re.findall(pattern, text)))
 
-STRICT OUTPUT:
-YES
-NO
+# -------------------------------
+# Scam Detection Endpoint
+# -------------------------------
+
+@app.post("/detect")
+def detect_scam(
+    request: ScamRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key)
+):
+    try:
+
+        user_message = request.message
+
+        # -------------------------------
+        # Call OpenAI
+        # -------------------------------
+
+        prompt = f"""
+You are a scam detection engine.
+
+Analyze the following message and respond ONLY in JSON:
+
+{{
+  "scam_detected": true/false,
+  "agent_reply": "reply pretending to be a victim to gather more scam intel",
+  "confidence_score": number between 0 and 1
+}}
 
 Message:
-{data.message}
+{user_message}
 """
 
-    try:
-        detection_response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
             temperature=0,
-            max_tokens=5,
-            messages=[{"role": "user", "content": detection_prompt}]
+            max_tokens=50,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
         )
 
-        scam_reply = detection_response.choices[0].message.content.strip().upper()
-        scam_detected = scam_reply == "YES"
+        raw_output = response.choices[0].message.content.strip()
 
-    except Exception:
-        scam_detected = False
-
-    # -----------------------------
-    # Agent Response
-    # -----------------------------
-    agent_reply = ""
-
-    if scam_detected and data.turn_count < 3:
-
-        agent_prompt = f"""
-You are a normal user replying to a scammer.
-
-Goals:
-- Sound worried but cooperative
-- Ask for payment details naturally
-- Never reveal suspicion
-- Keep reply short
-
-Conversation History:
-{data.history}
-
-Scammer Message:
-{data.message}
-
-Reply as user:
-"""
+        # -------------------------------
+        # Parse Model JSON Safely
+        # -------------------------------
 
         try:
-            agent_response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                temperature=0.7,
-                max_tokens=50,
-                messages=[{"role": "user", "content": agent_prompt}]
-            )
+            parsed = json.loads(raw_output)
+        except:
+            parsed = {
+                "scam_detected": False,
+                "agent_reply": "",
+                "confidence_score": 0.0
+            }
 
-            agent_reply = agent_response.choices[0].message.content.strip()
+        scam_detected = parsed.get("scam_detected", False)
+        agent_reply = parsed.get("agent_reply", "")
+        confidence_score = parsed.get("confidence_score", 0.0)
 
-        except Exception:
-            agent_reply = ""
+        # -------------------------------
+        # Extract Intelligence
+        # -------------------------------
 
-    # -----------------------------
-    # Intelligence Extraction
-    # -----------------------------
-    extracted = extract_intelligence(data.message + " " + agent_reply)
+        upi_ids = extract_upi_ids(user_message)
+        bank_accounts = extract_bank_accounts(user_message)
+        links = extract_links(user_message)
 
-    # -----------------------------
-    # Confidence Scoring
-    # -----------------------------
-    confidence_score = 0.4
+        # -------------------------------
+        # Store In Database
+        # -------------------------------
 
-    if scam_detected:
-        confidence_score += 0.3
-    if extracted["upi_ids"]:
-        confidence_score += 0.2
-    if extracted["phishing_links"]:
-        confidence_score += 0.1
+        interaction = ScamInteraction(
+            session_id=request.session_id,
+            message=user_message,
+            scam_detected=scam_detected,
+            agent_reply=agent_reply,
+            confidence_score=confidence_score,
+            upi_ids=",".join(upi_ids),
+            bank_accounts=",".join(bank_accounts),
+            phishing_links=",".join(links)
+        )
 
-    confidence_score = min(confidence_score, 0.95)
+        db.add(interaction)
+        db.commit()
 
-    # -----------------------------
-    # Store Scammer Message
-    # -----------------------------
-    db.add(Message(
-        conversation_id=data.conversation_id,
-        sender="scammer",
-        message_text=data.message,
-        scam_detected=scam_detected,
-        confidence=confidence_score
-    ))
+        # -------------------------------
+        # Final API Response
+        # -------------------------------
 
-    # -----------------------------
-    # Store Agent Message
-    # -----------------------------
-    if agent_reply:
-        db.add(Message(
-            conversation_id=data.conversation_id,
-            sender="agent",
-            message_text=agent_reply,
-            scam_detected=True,
-            confidence=confidence_score
-        ))
+        return {
+            "scam_detected": scam_detected,
+            "agent_reply": agent_reply,
+            "extracted_intelligence": {
+                "upi_ids": upi_ids,
+                "bank_accounts": bank_accounts,
+                "phishing_links": links
+            },
+            "confidence_score": confidence_score
+        }
 
-    # -----------------------------
-    # Store Intelligence
-    # -----------------------------
-    for upi in extracted["upi_ids"]:
-
-        exists = db.query(Intelligence).filter_by(
-            conversation_id=data.conversation_id,
-            intel_type="upi",
-            value=upi
-        ).first()
-
-        if not exists:
-            db.add(Intelligence(
-                conversation_id=data.conversation_id,
-                intel_type="upi",
-                value=upi
-            ))
-
-    for bank in extracted["bank_accounts"]:
-
-        exists = db.query(Intelligence).filter_by(
-            conversation_id=data.conversation_id,
-            intel_type="bank",
-            value=bank
-        ).first()
-
-        if not exists:
-            db.add(Intelligence(
-                conversation_id=data.conversation_id,
-                intel_type="bank",
-                value=bank
-            ))
-
-    for link in extracted["phishing_links"]:
-
-        exists = db.query(Intelligence).filter_by(
-            conversation_id=data.conversation_id,
-            intel_type="link",
-            value=link
-        ).first()
-
-        if not exists:
-            db.add(Intelligence(
-                conversation_id=data.conversation_id,
-                intel_type="link",
-                value=link
-            ))
-
-    db.commit()
-
-    # -----------------------------
-    # Final Response
-    # -----------------------------
-    return {
-        "scam_detected": scam_detected,
-        "agent_reply": agent_reply,
-        "extracted_intelligence": extracted,
-        "confidence_score": confidence_score
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
