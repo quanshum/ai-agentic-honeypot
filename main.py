@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from database import SessionLocal
-#from models import ScamInteraction
+# from models import ScamInteraction  # Uncomment when database model is ready
 
 # -------------------------------
 # FastAPI App
@@ -61,15 +61,15 @@ def verify_api_key(x_api_key: str = Header(...)):
 # Intelligence Extraction Helpers
 # -------------------------------
 
-def extract_upi_ids(text):
+def extract_upi_ids(text: str):
     pattern = r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}"
     return list(set(re.findall(pattern, text)))
 
-def extract_bank_accounts(text):
+def extract_bank_accounts(text: str):
     pattern = r"\b\d{9,18}\b"
     return list(set(re.findall(pattern, text)))
 
-def extract_links(text):
+def extract_links(text: str):
     pattern = r"https?://[^\s]+"
     return list(set(re.findall(pattern, text)))
 
@@ -87,7 +87,7 @@ def detect_scam(
         user_message = request.message
 
         # -------------------------------
-        # Call OpenAI
+        # OpenAI GPT-5-mini Prompt
         # -------------------------------
 
         prompt = f"""
@@ -105,13 +105,15 @@ Message:
 {user_message}
 """
 
+        # -------------------------------
+        # Call GPT-5-mini (compatible)
+        # -------------------------------
+
         response = client.chat.completions.create(
             model="gpt-5-mini",
-            temperature=0,
-            max_completion_tokens=100,  # ✅ changed from max_tokens
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=100  # ✅ use this instead of max_tokens
+            # temperature is removed, GPT-5-mini only supports default
         )
 
         raw_output = response.choices[0].message.content.strip()
@@ -142,22 +144,22 @@ Message:
         links = extract_links(user_message)
 
         # -------------------------------
-        # Store In Database
+        # Store In Database (optional)
         # -------------------------------
 
-        interaction = ScamInteraction(
-            session_id=request.session_id,
-            message=user_message,
-            scam_detected=scam_detected,
-            agent_reply=agent_reply,
-            confidence_score=confidence_score,
-            upi_ids=",".join(upi_ids),
-            bank_accounts=",".join(bank_accounts),
-            phishing_links=",".join(links)
-        )
-
-        db.add(interaction)
-        db.commit()
+        # interaction = ScamInteraction(
+        #     session_id=request.session_id,
+        #     message=user_message,
+        #     scam_detected=scam_detected,
+        #     agent_reply=agent_reply,
+        #     confidence_score=confidence_score,
+        #     upi_ids=",".join(upi_ids),
+        #     bank_accounts=",".join(bank_accounts),
+        #     phishing_links=",".join(links)
+        # )
+        #
+        # db.add(interaction)
+        # db.commit()
 
         # -------------------------------
         # Final API Response
