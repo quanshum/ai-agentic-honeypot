@@ -1,8 +1,13 @@
 import os
 import json
+import re
 from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from openai import OpenAI
+
+from database import SessionLocal
+# from models import ScamInteraction  # keep commented if DB not ready
 
 # -------------------------------
 # FastAPI App
@@ -21,6 +26,16 @@ if not API_KEY:
     raise ValueError("API_KEY is missing")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# -------------------------------
+# Database Dependency
+# -------------------------------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # -------------------------------
 # Request Schema (matches their sample)
@@ -44,38 +59,103 @@ def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
 # -------------------------------
+# Intelligence Extraction Helpers
+# -------------------------------
+def extract_upi_ids(text):
+    pattern = r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}"
+    return list(set(re.findall(pattern, text)))
+
+def extract_bank_accounts(text):
+    pattern = r"\b\d{9,18}\b"
+    return list(set(re.findall(pattern, text)))
+
+def extract_links(text):
+    pattern = r"https?://[^\s]+"
+    return list(set(re.findall(pattern, text)))
+
+# -------------------------------
 # Scam Detection Endpoint
 # -------------------------------
 @app.post("/detect")
-def detect_scam(request: ScamRequest, _: str = Depends(verify_api_key)):
+def detect_scam(
+    request: ScamRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_api_key)
+):
     try:
         user_message = request.message.text
 
         # -------------------------------
-        # Call OpenAI
+        # Call OpenAI with the previous detailed prompt
         # -------------------------------
         prompt = f"""
 You are a scam detection engine.
 
-Analyze the following message and respond ONLY with a short reply to simulate a victim's response:
+Analyze the following message and respond ONLY in JSON with these fields:
+
+{{
+  "scam_detected": true/false,
+  "agent_reply": "reply pretending to be a victim to gather more scam intel",
+  "confidence_score": number between 0 and 1
+}}
 
 Message:
 {user_message}
 """
+
         response = client.chat.completions.create(
             model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=100  # Use max_completion_tokens for gpt-5-mini
+            max_completion_tokens=100
         )
 
-        ai_reply = response.choices[0].message.content.strip()
+        raw_output = response.choices[0].message.content.strip()
 
         # -------------------------------
-        # Return the exact JSON they expect
+        # Parse Model JSON Safely
+        # -------------------------------
+        try:
+            parsed = json.loads(raw_output)
+        except json.JSONDecodeError:
+            parsed = {
+                "scam_detected": False,
+                "agent_reply": "",
+                "confidence_score": 0.0
+            }
+
+        scam_detected = parsed.get("scam_detected", False)
+        agent_reply = parsed.get("agent_reply", "")
+        confidence_score = parsed.get("confidence_score", 0.0)
+
+        # -------------------------------
+        # Extract Intelligence
+        # -------------------------------
+        upi_ids = extract_upi_ids(user_message)
+        bank_accounts = extract_bank_accounts(user_message)
+        links = extract_links(user_message)
+
+        # -------------------------------
+        # Store In Database (optional)
+        # -------------------------------
+        # interaction = ScamInteraction(
+        #     session_id=request.sessionId,
+        #     message=user_message,
+        #     scam_detected=scam_detected,
+        #     agent_reply=agent_reply,
+        #     confidence_score=confidence_score,
+        #     upi_ids=",".join(upi_ids),
+        #     bank_accounts=",".join(bank_accounts),
+        #     phishing_links=",".join(links)
+        # )
+        # db.add(interaction)
+        # db.commit()
+
+        # -------------------------------
+        # Return in the required format for the hackathon
         # -------------------------------
         return {
             "status": "success",
-            "reply": ai_reply
+            "reply": agent_reply
         }
 
     except Exception as e:
