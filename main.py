@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from database import SessionLocal
-from models import ScamInteraction
+#from models import ScamInteraction
 
 # -------------------------------
 # FastAPI App
