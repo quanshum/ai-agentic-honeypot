@@ -1,16 +1,16 @@
-# Environment variables
-.env
-
-# Python cache
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Virtual environment
+# Virtual Environment
 venv/
+.env
 
-# SQLite database
+# Database
 honeypot.db
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
