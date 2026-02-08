@@ -89,18 +89,47 @@ def detect_scam(
         # Call OpenAI with strict JSON instruction
         # -------------------------------
         prompt = f"""
-You are a scam detection engine.
+You are an advanced AI Honeypot designed to detect scammers and safely engage them to extract intelligence.
 
-Analyze the following message and respond ONLY in JSON with these fields:
+GOALS:
+1. Detect if the sender is likely a scammer.
+2. If scam is detected → respond like a believable human victim.
+3. Try to extract more scam details such as:
+   - Payment requests
+   - UPI IDs
+   - Bank account details
+   - External phishing links
+   - Phone numbers
+4. Keep the scammer engaged without revealing suspicion.
+5. If message is NOT scam → reply politely and normally.
 
-{{
+SCAM INDICATORS TO WATCH FOR:
+- Urgency or threats (account blocked, immediate action required)
+- Payment demands
+- Requests for OTP / PIN / passwords
+- Fake bank or government impersonation
+- Suspicious links
+- Requests for verification
+
+RESPONSE STYLE:
+- Sound natural and slightly confused
+- Ask questions that encourage scammer to reveal details
+- Do NOT accuse scammer
+- Keep reply short and human-like
+
+Respond ONLY in valid JSON using this format:
+
+{
   "scam_detected": true/false,
-  "agent_reply": "reply pretending to be a victim to gather more scam intel",
+  "agent_reply": "human style reply continuing conversation",
   "confidence_score": number between 0 and 1
-}}
+}
 
 Message:
+"""
 {user_message}
+"""
+
 
 IMPORTANT: Always return valid JSON with all fields filled. If nothing is detected, fill 'agent_reply' with 'No scam detected'.
 """
